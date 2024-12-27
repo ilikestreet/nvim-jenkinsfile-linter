@@ -17,6 +17,17 @@ local function reject_nil(tbl)
   end, tbl)
 end
 
+local function handle_error(msg)
+  if msg then
+    vim.notify("Something went wrong when trying to validate your file, check the logs.", vim.log.levels.ERROR)
+    log.error(msg)
+  end
+end
+
+local function handle_job_error(job)
+  handle_error(table.concat(job:stderr_result(), " "))
+end
+
 local function get_crumb_job()
   return Job:new({
     command = "curl",
@@ -27,6 +38,7 @@ local function get_crumb_job()
       user .. ":" .. (token or password),
       jenkins_url .. "/crumbIssuer/api/json",
     }),
+    on_stderr = handle_error,
   })
 end
 
@@ -39,7 +51,7 @@ local validate_job = vim.schedule_wrap(function(crumb_job)
   else
     local args = vim.fn.json_decode(concatenated_crumbs)
 
-    return Job:new({
+    local job = Job:new({
       command = "curl",
       args = reject_nil({
         "--silent",
@@ -55,15 +67,11 @@ local validate_job = vim.schedule_wrap(function(crumb_job)
         jenkins_url .. "/pipeline-model-converter/validate",
       }),
 
-      on_stderr = function(err, _)
-        if err then
-          log.error(err)
-        end
-      end,
+      on_stderr = handle_error,
+
       on_stdout = vim.schedule_wrap(function(err, data)
         if err then
-          vim.notify("Something went wront when trying to valide your file, check the logs.", vim.log.levels.ERROR)
-          log.error(err)
+          handle_error(err)
           return
         end
 
@@ -96,7 +104,10 @@ local validate_job = vim.schedule_wrap(function(crumb_job)
           end
         end
       end),
-    }):start()
+    })
+    job:after_failure(handle_job_error)
+    job:start()
+    return job
   end
 end)
 
@@ -115,7 +126,10 @@ end
 local function validate()
   local ok, msg = check_creds()
   if ok then
-    get_crumb_job():after(validate_job):start()
+    local job = get_crumb_job()
+    job:after_success(validate_job)
+    job:after_failure(handle_job_error)
+    job:start()
   else
     vim.notify(msg, vim.log.levels.ERROR)
   end
