@@ -21,6 +21,7 @@ local function get_crumb_job()
   return Job:new({
     command = "curl",
     args = reject_nil({
+      "--silent",
       insecure,
       "--user",
       user .. ":" .. (token or password),
@@ -41,6 +42,7 @@ local validate_job = vim.schedule_wrap(function(crumb_job)
     return Job:new({
       command = "curl",
       args = reject_nil({
+        "--silent",
         insecure,
         "--user",
         user .. ":" .. (token or password),
