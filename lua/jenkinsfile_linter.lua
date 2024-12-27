@@ -59,38 +59,39 @@ local validate_job = vim.schedule_wrap(function(crumb_job)
         end
       end,
       on_stdout = vim.schedule_wrap(function(err, data)
-        if not err then
-          if data == validated_msg then
-            vim.diagnostic.reset(namespace_id, 0)
-            vim.notify(validated_msg, vim.log.levels.INFO)
-          else
-            -- We only want to grab the msg, line, and col. We just throw
-            -- everything else away. NOTE: That only one seems to ever be
-            -- returned so this in theory will only ever match at most once per
-            -- call.
-            --WorkflowScript: 46: unexpected token: } @ line 46, column 1.
-            local msg, line_str, col_str = data:match("WorkflowScript.+%d+: (.+) @ line (%d+), column (%d+).")
-            if line_str and col_str then
-              local line = tonumber(line_str) - 1
-              local col = tonumber(col_str) - 1
-
-              local diag = {
-                bufnr = vim.api.nvim_get_current_buf(),
-                lnum = line,
-                end_lnum = line,
-                col = col,
-                end_col = col,
-                severity = vim.diagnostic.severity.ERROR,
-                message = msg,
-                source = "jenkinsfile linter",
-              }
-
-              vim.diagnostic.set(namespace_id, vim.api.nvim_get_current_buf(), { diag })
-            end
-          end
-        else
+        if err then
           vim.notify("Something went wront when trying to valide your file, check the logs.", vim.log.levels.ERROR)
           log.error(err)
+          return
+        end
+
+        if data == validated_msg then
+          vim.diagnostic.reset(namespace_id, 0)
+          vim.notify(validated_msg, vim.log.levels.INFO)
+        else
+          -- We only want to grab the msg, line, and col. We just throw
+          -- everything else away. NOTE: That only one seems to ever be
+          -- returned so this in theory will only ever match at most once per
+          -- call.
+          --WorkflowScript: 46: unexpected token: } @ line 46, column 1.
+          local msg, line_str, col_str = data:match("WorkflowScript.+%d+: (.+) @ line (%d+), column (%d+).")
+          if line_str and col_str then
+            local line = tonumber(line_str) - 1
+            local col = tonumber(col_str) - 1
+
+            local diag = {
+              bufnr = vim.api.nvim_get_current_buf(),
+              lnum = line,
+              end_lnum = line,
+              col = col,
+              end_col = col,
+              severity = vim.diagnostic.severity.ERROR,
+              message = msg,
+              source = "jenkinsfile linter",
+            }
+
+            vim.diagnostic.set(namespace_id, vim.api.nvim_get_current_buf(), { diag })
+          end
         end
       end),
     }):start()
