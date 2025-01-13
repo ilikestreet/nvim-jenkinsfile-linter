@@ -6,20 +6,39 @@ local password = os.getenv("JENKINS_PASSWORD")
 local token = os.getenv("JENKINS_API_TOKEN") or os.getenv("JENKINS_TOKEN")
 local jenkins_url = os.getenv("JENKINS_URL") or os.getenv("JENKINS_HOST")
 local namespace_id = vim.api.nvim_create_namespace("jenkinsfile-linter")
-local insecure = os.getenv("JENKINS_INSECURE") and "--insecure" or ""
+local insecure = os.getenv("JENKINS_INSECURE") and "--insecure" or nil
 local validated_msg = "Jenkinsfile successfully validated."
 local unauthorized_msg = "ERROR 401 Unauthorized"
 local not_found_msg = "ERROR 404 Not Found"
 
+local function reject_nil(tbl)
+  return vim.tbl_filter(function(val)
+    return val ~= nil
+  end, tbl)
+end
+
+local function handle_error(msg)
+  if msg then
+    vim.notify("Something went wrong when trying to validate your file, check the logs.", vim.log.levels.ERROR)
+    log.error(msg)
+  end
+end
+
+local function handle_job_error(job)
+  handle_error(table.concat(job:stderr_result(), " "))
+end
+
 local function get_crumb_job()
   return Job:new({
     command = "curl",
-    args = {
+    args = reject_nil({
+      "--silent",
       insecure,
       "--user",
       user .. ":" .. (token or password),
       jenkins_url .. "/crumbIssuer/api/json",
-    },
+    }),
+    on_stderr = handle_error,
   })
 end
 
@@ -32,9 +51,10 @@ local validate_job = vim.schedule_wrap(function(crumb_job)
   else
     local args = vim.fn.json_decode(concatenated_crumbs)
 
-    return Job:new({
+    local job = Job:new({
       command = "curl",
-      args = {
+      args = reject_nil({
+        "--silent",
         insecure,
         "--user",
         user .. ":" .. (token or password),
@@ -45,49 +65,49 @@ local validate_job = vim.schedule_wrap(function(crumb_job)
         "-F",
         "jenkinsfile=<" .. vim.fn.expand("%:p"),
         jenkins_url .. "/pipeline-model-converter/validate",
-      },
+      }),
 
-      on_stderr = function(err, _)
-        if err then
-          log.error(err)
-        end
-      end,
+      on_stderr = handle_error,
+
       on_stdout = vim.schedule_wrap(function(err, data)
-        if not err then
-          if data == validated_msg then
-            vim.diagnostic.reset(namespace_id, 0)
-            vim.notify(validated_msg, vim.log.levels.INFO)
-          else
-            -- We only want to grab the msg, line, and col. We just throw
-            -- everything else away. NOTE: That only one seems to ever be
-            -- returned so this in theory will only ever match at most once per
-            -- call.
-            --WorkflowScript: 46: unexpected token: } @ line 46, column 1.
-            local msg, line_str, col_str = data:match("WorkflowScript.+%d+: (.+) @ line (%d+), column (%d+).")
-            if line_str and col_str then
-              local line = tonumber(line_str) - 1
-              local col = tonumber(col_str) - 1
+        if err then
+          handle_error(err)
+          return
+        end
 
-              local diag = {
-                bufnr = vim.api.nvim_get_current_buf(),
-                lnum = line,
-                end_lnum = line,
-                col = col,
-                end_col = col,
-                severity = vim.diagnostic.severity.ERROR,
-                message = msg,
-                source = "jenkinsfile linter",
-              }
-
-              vim.diagnostic.set(namespace_id, vim.api.nvim_get_current_buf(), { diag })
-            end
-          end
+        if data == validated_msg then
+          vim.diagnostic.reset(namespace_id, 0)
+          vim.notify(validated_msg, vim.log.levels.INFO)
         else
-          vim.notify("Something went wront when trying to valide your file, check the logs.", vim.log.levels.ERROR)
-          log.error(err)
+          -- We only want to grab the msg, line, and col. We just throw
+          -- everything else away. NOTE: That only one seems to ever be
+          -- returned so this in theory will only ever match at most once per
+          -- call.
+          --WorkflowScript: 46: unexpected token: } @ line 46, column 1.
+          local msg, line_str, col_str = data:match("WorkflowScript.+%d+: (.+) @ line (%d+), column (%d+).")
+          if line_str and col_str then
+            local line = tonumber(line_str) - 1
+            local col = tonumber(col_str) - 1
+
+            local diag = {
+              bufnr = vim.api.nvim_get_current_buf(),
+              lnum = line,
+              end_lnum = line,
+              col = col,
+              end_col = col,
+              severity = vim.diagnostic.severity.ERROR,
+              message = msg,
+              source = "jenkinsfile linter",
+            }
+
+            vim.diagnostic.set(namespace_id, vim.api.nvim_get_current_buf(), { diag })
+          end
         end
       end),
-    }):start()
+    })
+    job:after_failure(handle_job_error)
+    job:start()
+    return job
   end
 end)
 
@@ -106,7 +126,10 @@ end
 local function validate()
   local ok, msg = check_creds()
   if ok then
-    get_crumb_job():after(validate_job):start()
+    local job = get_crumb_job()
+    job:after_success(validate_job)
+    job:after_failure(handle_job_error)
+    job:start()
   else
     vim.notify(msg, vim.log.levels.ERROR)
   end
